@@ -9,6 +9,10 @@ const { GraphQLJSON } = require(`gatsby/graphql`);
 const highlight = require("gatsby-remark-prismjs/highlight-code.js");
 const { fluid } = require("gatsby-plugin-sharp");
 
+const { replaceVariables, validateVariables, createMapReplacer } = require("./src/replace-variables.js");
+const { removeCommonIndent } = require("./src/remove-common-indent.js");
+const extractFragment = require("./src/extract-fragment.js");
+
 // The transformation functions should be converted to plugins, but
 // for now we keep them integrated to avoid proliferation of boilerplate.
 
@@ -19,13 +23,6 @@ const isRelativeUrl = url => {
 const notInPre = $ => (i, el) => $(el).parents("pre").length === 0;
 const indexingAllowed = $ => (i, el) => $(el).data("indexing") !== "disabled";
 
-// Maps file extensions to the language to use for highlighting.
-const languageForExtension = {
-  "html": "markup",
-  "js": "javascript",
-  "xml": "xml"
-};
-
 /**
  * Calls the "gatsby-remark-prismjs" plugin's highlighting code and returns
  * the appropriate HTML.
@@ -34,7 +31,7 @@ const highlightFragment = ($el, lang, code) => {
   const className = [$el.attr("class"), `language-${lang}`].filter(e => !!e).join(" ");
 
   return `<div class="gatsby-highlight">
-    <pre class="${className}"><code data-language="${lang}">${highlight(lang, code, false).trim()}</code></pre>
+    <pre class="${className}"><code data-language="${lang}">${highlight(lang, code, false)}</code></pre>
   </div>`;
 };
 
@@ -43,12 +40,26 @@ const highlightFragment = ($el, lang, code) => {
  * data-embed attribute is resolved against the path of the file in which
  * the embed tag appears.
  */
-const embedCode = ($, dir, reporter) => {
+const embedCode = ($, dir, variables, reporter) => {
   $("pre[data-embed]")
     .filter(notInPre($))
     .replaceWith((i, el) => {
       const $el = $(el);
-      const embed = $el.data("embed");
+      const declaredEmbed = $el.data("embed");
+      const fragment = $el.data("fragment");
+      const declaredLanguage = $el.data("language");
+      const preserveIndent = $el.data("preserve-common-indent");
+
+      // Replace variables in the path. We don't care about the semantics
+      // here, it's up to the caller to ensure the path makes sense and is safe.
+      const embed = replaceVariables(declaredEmbed, (name) => {
+        let value = variables[name] || "";
+        if (value.endsWith("/" || value.endsWith("\\"))) {
+          return value.substring(0, value.length - 1);
+        } else {
+          return value;
+        }
+      });
 
       const embedAbsolute = path.resolve(dir, embed);
       if (!fs.existsSync(embedAbsolute)) {
@@ -62,13 +73,24 @@ const embedCode = ($, dir, reporter) => {
       }
 
       const ext = path.extname(embedAbsolute).substring(1).toLowerCase();
-      const language = languageForExtension[ext];
-      if (!language) {
-        fail(`unknown language for ${embed}`);
-        return "";
+      const language = declaredLanguage || ext;
+
+      const rawContent = fs.readFileSync(embedAbsolute, "utf8");
+      let content;
+      if (fragment) {
+        try {
+          content = extractFragment(rawContent, fragment);
+        } catch (e) {
+          fail(e);
+          content = "";
+        }
+      } else {
+        content = rawContent;
       }
 
-      const content = fs.readFileSync(embedAbsolute, "utf8");
+      if (!preserveIndent) {
+        content = removeCommonIndent(content);
+      }
 
       // Ideally, we should just insert the raw contents and have it
       // highlighted in the dedicated code below, but cheerio has problems
@@ -77,7 +99,8 @@ const embedCode = ($, dir, reporter) => {
       return highlightFragment($el, language, content);
 
       function fail(message) {
-        reporter.warn(`Failed to embed content: ${message}.`);
+        const dot = message.endsWith("." ? "" : ".");
+        reporter.warn(`Failed to embed content: ${message}${dot}`);
       }
     });
 
@@ -94,7 +117,13 @@ const highlightCode = $ => {
   $("pre[data-language]")
     .replaceWith((i, el) => {
       const $el = $(el);
-      return highlightFragment($el, $el.data("language"), $el.html());
+      const preserveIndent = $el.data("preserve-common-indent");
+
+      let html = $el.html();
+      if (!preserveIndent) {
+        html = removeCommonIndent(html);
+      }
+      return highlightFragment($el, $el.data("language"), html);
     });
   return $;
 };
@@ -432,7 +461,7 @@ const onCreateNode = async ({
   createParentChildLink({ parent: node, child: htmlNode });
 };
 
-const setFieldsOnGraphQLNodeType = ({ type, getNodesByType, reporter, cache, pathPrefix }) => {
+const setFieldsOnGraphQLNodeType = ({ type, getNodesByType, reporter, cache, pathPrefix }, { variables }) => {
   if (type.name === "Html") {
     return {
       html: {
@@ -447,11 +476,14 @@ const setFieldsOnGraphQLNodeType = ({ type, getNodesByType, reporter, cache, pat
           $ = await processImages($, fileNodesByPath, pathPrefix, reporter, cache);
           $ = rewriteLinks($);
           $ = addSectionAnchors($);
-          $ = embedCode($, node.dir, reporter);
+          $ = embedCode($, node.dir, variables, reporter);
           $ = highlightCode($);
           $ = addIdsForIndexableFragments($);
 
-          return fixClosingTagsInHighlightedCode($.html("article"));
+          let html = fixClosingTagsInHighlightedCode($.html("article"));
+          html = replaceVariables(html, createMapReplacer(variables));
+
+          return html;
         }
       },
       tableOfContents: {
@@ -472,5 +504,14 @@ const setFieldsOnGraphQLNodeType = ({ type, getNodesByType, reporter, cache, pat
   }
 };
 
+const onPreBootstrap = ({ reporter }, { variables }) => {
+  try {
+    validateVariables(variables);
+  } catch (e) {
+    reporter.panic(e);
+  }
+};
+
+exports.onPreBootstrap = onPreBootstrap;
 exports.onCreateNode = onCreateNode;
 exports.setFieldsOnGraphQLNodeType = setFieldsOnGraphQLNodeType;

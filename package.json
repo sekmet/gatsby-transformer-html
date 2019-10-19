@@ -1,7 +1,7 @@
 {
   "name": "@carrotsearch/gatsby-transformer-html",
   "description": "A Gatsby transformer plugin for authoring content in HTML. Supports ToC generation, responsive images, section anchors and Prism.JS code highlighting.",
-  "version": "1.0.9",
+  "version": "1.0.12",
   "main": "./index.js",
   "keywords": [
     "gatsby",
@@ -19,6 +19,10 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
+  "scripts": {
+    "test": "mocha --recursive 'src/**/*.test.js'",
+    "test-watch": "mocha --recursive 'src/**/*.test.js' -w"
+  },
   "peerDependencies": {
     "gatsby": "^2.0.0"
   },
@@ -27,8 +31,11 @@
     "gatsby-plugin-sharp": "^2.2.9",
     "gatsby-remark-prismjs": "^3.3.3",
     "lodash": "^4.17.15",
-    "prismjs": "^1.17.1",
-    "react": "^16.8.6"
+    "prismjs": "^1.17.1"
+  },
+  "devDependencies": {
+    "mocha": "^6.2.1",
+    "must": "^0.13.4"
   },
   "license": "MIT"
 }
